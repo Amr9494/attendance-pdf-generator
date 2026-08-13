@@ -15,7 +15,7 @@ st.set_page_config(page_title="Attendance PDF Generator", layout="centered")
 st.title("📋 Attendance Sheet Generator")
 st.write("Upload your student Excel file to generate printable PDF attendance sheets.")
 
-# Sidebar Configuration Controls (Numeric Inputs instead of Sliders)
+# Sidebar Configuration Controls
 st.sidebar.header("Layout Settings")
 max_students = st.sidebar.number_input("Max Students per Page", min_value=5, max_value=25, value=12, step=1)
 student_col_width = st.sidebar.number_input("Student Name Column Width (pt)", min_value=60, max_value=250, value=120, step=5)
@@ -60,11 +60,10 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
         alignment=1, spaceAfter=8
     )
     
-    # Text wrapping enabled via normal Paragraph behavior
     student_style = ParagraphStyle(
         'StudentName', parent=styles['Normal'], fontName='Helvetica-Bold',
         fontSize=10, leading=12, textColor=colors.HexColor('#000000'),
-        wordWrap='CJK'  # Ensures clean wrapping for long words or names
+        wordWrap='CJK'  # Text wrapping for long names
     )
     
     header_date_style = ParagraphStyle(
@@ -98,11 +97,9 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
             ]
             table_data = [header_row]
 
-            # Wrap student names in Paragraph objects to handle multi-line text wrapping
             for student_name in chunk:
                 table_data.append([Paragraph(student_name, student_style)] + [""] * num_sundays)
 
-            # Pad remaining empty rows if chunk has fewer students than max
             for _ in range(max_students_per_page - len(chunk)):
                 table_data.append([""] + [""] * num_sundays)
 
@@ -110,7 +107,6 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
             day_col_width = remaining_width / num_sundays if num_sundays > 0 else remaining_width
             col_widths = [student_name_width] + [day_col_width] * num_sundays
             
-            # Row height array (None allows wrapped text to autoscale row height if necessary)
             row_heights = [header_row_height] + [student_row_height] * max_students_per_page
 
             t = Table(table_data, colWidths=col_widths, rowHeights=row_heights)
@@ -128,7 +124,7 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
             story.append(t)
             
             if preview_only:
-                break # Only generate one page for preview
+                break
             story.append(PageBreak())
 
     if story and isinstance(story[-1], PageBreak):
@@ -139,7 +135,7 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
     return pdf_buffer
 
 def render_preview_image(pdf_bytes):
-    """Converts the first page of the PDF buffer into an image for instant UI preview."""
+    """Converts the first page of the PDF buffer into an image for UI preview."""
     pdf = pdfium.PdfDocument(pdf_bytes)
     page = pdf[0]
     image = page.render(scale=2).to_pil()
@@ -153,10 +149,10 @@ if uploaded_file is not None:
         st.subheader("🖼️ Page 1 Layout Preview")
         st.info("Adjust the settings in the sidebar to dynamically re-size the table cells.")
         
-        # Render dynamic image preview
+        # Render dynamic image preview with updated parameter name
         preview_pdf = generate_pdf(students, max_students, student_col_width, preview_only=True)
         preview_img = render_preview_image(preview_pdf)
-        st.image(preview_img, caption="Live Preview (First Page)", use_column_width=True)
+        st.image(preview_img, caption="Live Preview (First Page)", use_container_width=True)
         
         st.markdown("---")
         if st.button("🚀 Generate Full PDF (All Months)"):
