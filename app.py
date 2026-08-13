@@ -9,7 +9,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, PageBreak, HRFlowable
-from reportlab.pdfgen import canvas
 
 # Optional imports for right-to-left Arabic shaping
 try:
@@ -23,6 +22,7 @@ except ImportError:
 # CONFIGURABLE HEADER (Easily change the document title here)
 # ==============================================================================
 MAIN_HEADER_TITLE = "دفتر متابعة حفظ القرآن الكريم"
+NUMBER_COL_WIDTH = 25  # Width of the '#' sequence number column (in points)
 # ==============================================================================
 
 st.set_page_config(page_title="Attendance PDF Generator", layout="centered")
@@ -31,7 +31,7 @@ st.title("📋 Attendance Sheet Generator")
 st.write("Upload your student Excel file, select a sheet, and generate customized PDF attendance sheets.")
 
 def reshape_text(text):
-    """Reshapes Arabic text for proper RTL display in ReportLab."""
+    """Reshapes text for proper display in ReportLab."""
     if ARABIC_SUPPORT and any('\u0600' <= c <= '\u06FF' for c in text):
         reshaped = arabic_reshaper.reshape(text)
         return get_display(reshaped)
@@ -85,7 +85,7 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
 
     styles = getSampleStyleSheet()
     
-    # Header styles matching the design image
+    # Header styles matching the layout design
     header_title_style = ParagraphStyle(
         'MainHeader', parent=styles['Heading1'], fontName='Helvetica-Bold',
         fontSize=20, leading=24, textColor=colors.HexColor('#000000'),
@@ -115,6 +115,11 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
         fontSize=11, leading=13, textColor=colors.HexColor('#000000'), alignment=1
     )
 
+    num_col_style = ParagraphStyle(
+        'NumCol', parent=styles['Normal'], fontName='Helvetica-Bold',
+        fontSize=10, leading=12, textColor=colors.HexColor('#000000'), alignment=1
+    )
+
     printable_width = 538
     printable_height = 620 # Height allocated for table after headers
     header_row_height = 25
@@ -141,16 +146,16 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
 
             num_sundays = len(sundays)
 
-            for chunk in student_chunks:
-                # 1. Main Arabic/Custom Document Title
+            for chunk_idx, chunk in enumerate(student_chunks):
+                # 1. Main Document Title
                 story.append(Paragraph(formatted_title, header_title_style))
                 story.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=8, spaceBefore=4))
 
-                # 2. Light Green Month Banner Row (Matching May 2026 style)
+                # 2. Light Green Month Banner Row
                 month_str = f"{month_name} {year}"
                 banner_table = Table([[Paragraph(month_str, month_banner_style)]], colWidths=[printable_width])
                 banner_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D1E7DD')), # Light green background
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D1E7DD')),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                     ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#000000')),
@@ -160,43 +165,58 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
                 story.append(banner_table)
                 story.append(HRFlowable(width="100%", thickness=0, spaceAfter=8))
 
-                # 3. Main Attendance Table Header
-                # Row 0: "Student Name" (spans 2 rows) | "Attendance + Notes" (spans all Sunday cols)
-                # Row 1: empty name cell | Individual Sunday dates ("3 May", "10 May", etc.)
-                row0 = [Paragraph("<b>Student<br/>Name</b>", header_date_style), Paragraph("Attendance + Notes", attendance_banner_style)] + [""] * (num_sundays - 1)
-                row1 = [""] + [Paragraph(f"<b>{d.day} {month_name[:3]}</b>", header_date_style) for d in sundays]
+                # 3. Main Attendance Table Header with Number Column
+                # Col 0: "#" (Row 0-1) | Col 1: "Student Name" (Row 0-1) | Col 2..N: "Attendance + Notes"
+                row0 = [
+                    Paragraph("<b>#</b>", header_date_style),
+                    Paragraph("<b>Student<br/>Name</b>", header_date_style),
+                    Paragraph("Attendance + Notes", attendance_banner_style)
+                ] + [""] * (num_sundays - 1)
+                
+                row1 = ["", ""] + [Paragraph(f"<b>{d.day} {month_name[:3]}</b>", header_date_style) for d in sundays]
                 
                 table_data = [row0, row1]
 
-                for student_name in chunk:
-                    table_data.append([Paragraph(student_name, student_style)] + [""] * num_sundays)
+                # Populate Rows with Number, Student Name, and Attendance Boxes
+                start_student_num = (chunk_idx * max_students_per_page) + 1
+                for idx, student_name in enumerate(chunk):
+                    student_num_str = str(start_student_num + idx)
+                    table_data.append([
+                        Paragraph(student_num_str, num_col_style),
+                        Paragraph(student_name, student_style)
+                    ] + [""] * num_sundays)
 
+                # Pad remaining empty rows if chunk has fewer students than max_students_per_page
                 for _ in range(max_students_per_page - len(chunk)):
-                    table_data.append([""] + [""] * num_sundays)
+                    table_data.append(["", ""] + [""] * num_sundays)
 
-                remaining_width = printable_width - student_name_width
+                # Calculate Column Widths
+                remaining_width = printable_width - NUMBER_COL_WIDTH - student_name_width
                 day_col_width = remaining_width / num_sundays if num_sundays > 0 else remaining_width
-                col_widths = [student_name_width] + [day_col_width] * num_sundays
+                col_widths = [NUMBER_COL_WIDTH, student_name_width] + [day_col_width] * num_sundays
                 
                 row_heights = [header_row_height, header_row_height] + [student_row_height] * max_students_per_page
 
                 t = Table(table_data, colWidths=col_widths, rowHeights=row_heights)
                 t.setStyle(TableStyle([
-                    # Merge "Student Name" across row 0 & 1
+                    # Merge "#" across row 0 & 1
                     ('SPAN', (0, 0), (0, 1)),
+                    # Merge "Student Name" across row 0 & 1
+                    ('SPAN', (1, 0), (1, 1)),
                     # Merge "Attendance + Notes" across all Sunday columns on row 0
-                    ('SPAN', (1, 0), (-1, 0)),
-                    # Grey background for "Attendance + Notes" header
-                    ('BACKGROUND', (1, 0), (-1, 0), colors.HexColor('#CCCCCC')),
+                    ('SPAN', (2, 0), (-1, 0)),
+                    # Grey background for "Attendance + Notes" banner
+                    ('BACKGROUND', (2, 0), (-1, 0), colors.HexColor('#CCCCCC')),
                     
                     ('GRID', (0, 0), (-1, -1), 1.5, colors.HexColor('#000000')),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('ALIGN', (0, 0), (0, -1), 'CENTER'), # Center align student numbers
+                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),   # Left align student names
+                    ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
                     ('TOPPADDING', (0, 0), (-1, -1), 2),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 3),
                 ]))
 
                 story.append(t)
