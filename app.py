@@ -8,31 +8,67 @@ import pypdfium2 as pdfium
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, PageBreak, HRFlowable
+from reportlab.pdfgen import canvas
+
+# Optional imports for right-to-left Arabic shaping
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    ARABIC_SUPPORT = True
+except ImportError:
+    ARABIC_SUPPORT = False
+
+# ==============================================================================
+# CONFIGURABLE HEADER (Easily change the document title here)
+# ==============================================================================
+MAIN_HEADER_TITLE = "دفتر متابعة حفظ القرآن الكريم"
+# ==============================================================================
 
 st.set_page_config(page_title="Attendance PDF Generator", layout="centered")
 
 st.title("📋 Attendance Sheet Generator")
-st.write("Upload your student Excel file to generate printable PDF attendance sheets.")
+st.write("Upload your student Excel file, select a sheet, and generate customized PDF attendance sheets.")
+
+def reshape_text(text):
+    """Reshapes Arabic text for proper RTL display in ReportLab."""
+    if ARABIC_SUPPORT and any('\u0600' <= c <= '\u06FF' for c in text):
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    return text
 
 # Sidebar Configuration Controls
-st.sidebar.header("Layout Settings")
+st.sidebar.header("Layout & Header Settings")
+doc_title = st.sidebar.text_input("Main Header Title", value=MAIN_HEADER_TITLE)
 max_students = st.sidebar.number_input("Max Students per Page", min_value=5, max_value=25, value=12, step=1)
 student_col_width = st.sidebar.number_input("Student Name Column Width (pt)", min_value=60, max_value=250, value=120, step=5)
 
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
 
-def parse_students(file_bytes):
-    """Extracts student names from Column A of the uploaded Excel file."""
-    wb = load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
-    sheet = wb.active
-    students = []
-    for row in sheet.iter_rows(min_row=2, min_col=1, max_col=1, values_only=True):
-        if row[0] is not None and str(row[0]).strip() != "":
-            students.append(str(row[0]).strip())
-    return students
+def get_sheet_names(file_bytes):
+    """Returns a list of all sheet names in the workbook."""
+    wb = load_workbook(filename=io.BytesIO(file_bytes), read_only=True)
+    return wb.sheetnames
 
-def generate_pdf(students, max_students_per_page, student_name_width, preview_only=False):
+def parse_students(file_bytes, target_sheets):
+    """Extracts student names from specified sheet(s)."""
+    wb = load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
+    all_students = {}
+    
+    sheets_to_process = wb.sheetnames if "All Sheets" in target_sheets else target_sheets
+    
+    for sheet_name in sheets_to_process:
+        sheet = wb[sheet_name]
+        students = []
+        for row in sheet.iter_rows(min_row=2, min_col=1, max_col=1, values_only=True):
+            if row[0] is not None and str(row[0]).strip() != "":
+                students.append(str(row[0]).strip())
+        if students:
+            all_students[sheet_name] = students
+            
+    return all_students
+
+def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_name_width, preview_only=False):
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         pdf_buffer,
@@ -45,87 +81,132 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
 
     story = []
     start_date = datetime.date(2026, 8, 9)
-    # If previewing, only generate August; otherwise generate August through November
     months = [(2026, 8)] if preview_only else [(2026, 8), (2026, 9), (2026, 10), (2026, 11)]
 
-    student_chunks = [
-        students[i:i + max_students_per_page] 
-        for i in range(0, len(students), max_students_per_page)
-    ]
-
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        'MonthTitle', parent=styles['Heading1'], fontName='Helvetica-Bold',
-        fontSize=22, leading=26, textColor=colors.HexColor('#000000'),
-        alignment=1, spaceAfter=8
+    
+    # Header styles matching the design image
+    header_title_style = ParagraphStyle(
+        'MainHeader', parent=styles['Heading1'], fontName='Helvetica-Bold',
+        fontSize=20, leading=24, textColor=colors.HexColor('#000000'),
+        alignment=1, spaceAfter=6
     )
     
+    month_banner_style = ParagraphStyle(
+        'MonthBanner', parent=styles['Heading2'], fontName='Helvetica-Bold',
+        fontSize=16, leading=20, textColor=colors.HexColor('#000000'),
+        alignment=1
+    )
+
+    attendance_banner_style = ParagraphStyle(
+        'AttBanner', parent=styles['Normal'], fontName='Helvetica-Bold',
+        fontSize=12, leading=14, textColor=colors.HexColor('#000000'),
+        alignment=1
+    )
+
     student_style = ParagraphStyle(
         'StudentName', parent=styles['Normal'], fontName='Helvetica-Bold',
         fontSize=10, leading=12, textColor=colors.HexColor('#000000'),
-        wordWrap='CJK'  # Text wrapping for long names
+        wordWrap='CJK'
     )
     
     header_date_style = ParagraphStyle(
         'HeaderDate', parent=styles['Normal'], fontName='Helvetica-Bold',
-        fontSize=15, leading=17, textColor=colors.HexColor('#000000'), alignment=1
+        fontSize=11, leading=13, textColor=colors.HexColor('#000000'), alignment=1
     )
 
     printable_width = 538
-    printable_height = 700
-    header_row_height = 32
-    student_row_height = (printable_height - header_row_height) / max_students_per_page
+    printable_height = 620 # Height allocated for table after headers
+    header_row_height = 25
+    student_row_height = (printable_height - (header_row_height * 2)) / max_students_per_page
 
-    for year, month in months:
-        month_name = calendar.month_name[month]
-        sundays = []
-        cal = calendar.monthcalendar(year, month)
-        for week in cal:
-            day = week[6]
-            if day != 0:
-                d = datetime.date(year, month, day)
-                if d >= start_date:
-                    sundays.append(day)
+    formatted_title = reshape_text(title_text)
 
-        num_sundays = len(sundays)
+    for sheet_name, students in students_by_sheet.items():
+        student_chunks = [
+            students[i:i + max_students_per_page] 
+            for i in range(0, len(students), max_students_per_page)
+        ]
 
-        for chunk in student_chunks:
-            story.append(Paragraph(month_name, title_style))
-            
-            header_row = [Paragraph("", header_date_style)] + [
-                Paragraph(str(day), header_date_style) for day in sundays
-            ]
-            table_data = [header_row]
+        for year, month in months:
+            month_name = calendar.month_name[month]
+            sundays = []
+            cal = calendar.monthcalendar(year, month)
+            for week in cal:
+                day = week[6]
+                if day != 0:
+                    d = datetime.date(year, month, day)
+                    if d >= start_date:
+                        sundays.append(d)
 
-            for student_name in chunk:
-                table_data.append([Paragraph(student_name, student_style)] + [""] * num_sundays)
+            num_sundays = len(sundays)
 
-            for _ in range(max_students_per_page - len(chunk)):
-                table_data.append([""] + [""] * num_sundays)
+            for chunk in student_chunks:
+                # 1. Main Arabic/Custom Document Title
+                story.append(Paragraph(formatted_title, header_title_style))
+                story.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=8, spaceBefore=4))
 
-            remaining_width = printable_width - student_name_width
-            day_col_width = remaining_width / num_sundays if num_sundays > 0 else remaining_width
-            col_widths = [student_name_width] + [day_col_width] * num_sundays
-            
-            row_heights = [header_row_height] + [student_row_height] * max_students_per_page
+                # 2. Light Green Month Banner Row (Matching May 2026 style)
+                month_str = f"{month_name} {year}"
+                banner_table = Table([[Paragraph(month_str, month_banner_style)]], colWidths=[printable_width])
+                banner_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D1E7DD')), # Light green background
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#000000')),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ]))
+                story.append(banner_table)
+                story.append(HRFlowable(width="100%", thickness=0, spaceAfter=8))
 
-            t = Table(table_data, colWidths=col_widths, rowHeights=row_heights)
-            t.setStyle(TableStyle([
-                ('GRID', (0, 0), (-1, -1), 3.0, colors.HexColor('#000000')),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-                ('TOPPADDING', (0, 0), (-1, -1), 2),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-            ]))
+                # 3. Main Attendance Table Header
+                # Row 0: "Student Name" (spans 2 rows) | "Attendance + Notes" (spans all Sunday cols)
+                # Row 1: empty name cell | Individual Sunday dates ("3 May", "10 May", etc.)
+                row0 = [Paragraph("<b>Student<br/>Name</b>", header_date_style), Paragraph("Attendance + Notes", attendance_banner_style)] + [""] * (num_sundays - 1)
+                row1 = [""] + [Paragraph(f"<b>{d.day} {month_name[:3]}</b>", header_date_style) for d in sundays]
+                
+                table_data = [row0, row1]
 
-            story.append(t)
-            
+                for student_name in chunk:
+                    table_data.append([Paragraph(student_name, student_style)] + [""] * num_sundays)
+
+                for _ in range(max_students_per_page - len(chunk)):
+                    table_data.append([""] + [""] * num_sundays)
+
+                remaining_width = printable_width - student_name_width
+                day_col_width = remaining_width / num_sundays if num_sundays > 0 else remaining_width
+                col_widths = [student_name_width] + [day_col_width] * num_sundays
+                
+                row_heights = [header_row_height, header_row_height] + [student_row_height] * max_students_per_page
+
+                t = Table(table_data, colWidths=col_widths, rowHeights=row_heights)
+                t.setStyle(TableStyle([
+                    # Merge "Student Name" across row 0 & 1
+                    ('SPAN', (0, 0), (0, 1)),
+                    # Merge "Attendance + Notes" across all Sunday columns on row 0
+                    ('SPAN', (1, 0), (-1, 0)),
+                    # Grey background for "Attendance + Notes" header
+                    ('BACKGROUND', (1, 0), (-1, 0), colors.HexColor('#CCCCCC')),
+                    
+                    ('GRID', (0, 0), (-1, -1), 1.5, colors.HexColor('#000000')),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ]))
+
+                story.append(t)
+                
+                if preview_only:
+                    break
+                story.append(PageBreak())
+
             if preview_only:
                 break
-            story.append(PageBreak())
 
     if story and isinstance(story[-1], PageBreak):
         story.pop()
@@ -135,7 +216,7 @@ def generate_pdf(students, max_students_per_page, student_name_width, preview_on
     return pdf_buffer
 
 def render_preview_image(pdf_bytes):
-    """Converts the first page of the PDF buffer into an image for UI preview."""
+    """Renders PDF page 1 to an image for UI preview."""
     pdf = pdfium.PdfDocument(pdf_bytes)
     page = pdf[0]
     image = page.render(scale=2).to_pil()
@@ -144,26 +225,48 @@ def render_preview_image(pdf_bytes):
     return img_byte_arr.getvalue()
 
 if uploaded_file is not None:
-    students = parse_students(uploaded_file.getvalue())
-    if students:
-        st.subheader("🖼️ Page 1 Layout Preview")
-        st.info("Adjust the settings in the sidebar to dynamically re-size the table cells.")
+    file_bytes = uploaded_file.getvalue()
+    sheet_names = get_sheet_names(file_bytes)
+    
+    # Sheet Selection Box
+    selected_sheets = st.sidebar.multiselect(
+        "Select Sheet(s) to Process",
+        options=["All Sheets"] + sheet_names,
+        default=[sheet_names[0]]
+    )
+
+    if selected_sheets:
+        students_by_sheet = parse_students(file_bytes, selected_sheets)
         
-        # Render dynamic image preview with updated parameter name
-        preview_pdf = generate_pdf(students, max_students, student_col_width, preview_only=True)
-        preview_img = render_preview_image(preview_pdf)
-        st.image(preview_img, caption="Live Preview (First Page)", use_container_width=True)
-        
-        st.markdown("---")
-        if st.button("🚀 Generate Full PDF (All Months)"):
-            with st.spinner("Compiling full PDF..."):
-                full_pdf = generate_pdf(students, max_students, student_col_width, preview_only=False)
-                st.success("PDF generated successfully!")
-                st.download_button(
-                    label="📥 Download Complete PDF",
-                    data=full_pdf,
-                    file_name="Attendance_Sheets.pdf",
-                    mime="application/pdf"
-                )
-    else:
-        st.error("No student names were found in Column A of the uploaded file.")
+        if students_by_sheet:
+            st.subheader("🖼️ Page 1 Layout Preview")
+            
+            preview_pdf = generate_pdf(
+                students_by_sheet, 
+                doc_title, 
+                max_students, 
+                student_col_width, 
+                preview_only=True
+            )
+            preview_img = render_preview_image(preview_pdf)
+            st.image(preview_img, caption="Live Layout Preview", use_container_width=True)
+            
+            st.markdown("---")
+            if st.button("🚀 Generate Full PDF"):
+                with st.spinner("Compiling PDF..."):
+                    full_pdf = generate_pdf(
+                        students_by_sheet, 
+                        doc_title, 
+                        max_students, 
+                        student_col_width, 
+                        preview_only=False
+                    )
+                    st.success("PDF generated successfully!")
+                    st.download_button(
+                        label="📥 Download Complete PDF",
+                        data=full_pdf,
+                        file_name="Attendance_Sheets.pdf",
+                        mime="application/pdf"
+                    )
+        else:
+            st.error("No student names were found in Column A of the selected sheet(s).")

@@ -2,3 +2,5 @@ streamlit
 reportlab
 openpyxl
 pypdfium2
+arabic_reshaper
+python-bidi
