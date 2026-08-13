@@ -19,7 +19,7 @@ except ImportError:
     ARABIC_SUPPORT = False
 
 # ==============================================================================
-# CONFIGURABLE HEADER (Easily change the document title here)
+# DEFAULT CONFIGURATION
 # ==============================================================================
 MAIN_HEADER_TITLE = "دفتر متابعة حفظ القرآن الكريم"
 NUMBER_COL_WIDTH = 25  # Width of the '#' sequence number column (in points)
@@ -38,10 +38,27 @@ def reshape_text(text):
     return text
 
 # Sidebar Configuration Controls
-st.sidebar.header("Layout & Header Settings")
+st.sidebar.header("Document & Layout Settings")
 doc_title = st.sidebar.text_input("Main Header Title", value=MAIN_HEADER_TITLE)
 max_students = st.sidebar.number_input("Max Students per Page", min_value=5, max_value=25, value=12, step=1)
 student_col_width = st.sidebar.number_input("Student Name Column Width (pt)", min_value=60, max_value=250, value=120, step=5)
+
+st.sidebar.markdown("---")
+st.sidebar.header("Date Settings")
+
+# Date Selection Controls
+current_year = datetime.datetime.now().year
+selected_year = st.sidebar.number_input("Year", min_value=2020, max_value=2035, value=current_year, step=1)
+
+month_names_list = list(calendar.month_name)[1:] # ['January', 'February', ...]
+start_month_name = st.sidebar.selectbox("Start Month", options=month_names_list, index=7) # Default: August
+start_month_idx = month_names_list.index(start_month_name) + 1
+
+num_months = st.sidebar.number_input("Number of Months to Include", min_value=1, max_value=12, value=4, step=1)
+
+days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+selected_day_name = st.sidebar.selectbox("Day of Week for Attendance", options=days_of_week, index=6) # Default: Sunday
+selected_day_idx = days_of_week.index(selected_day_name) # 0 = Mon, ..., 6 = Sun
 
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
 
@@ -68,7 +85,20 @@ def parse_students(file_bytes, target_sheets):
             
     return all_students
 
-def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_name_width, preview_only=False):
+def get_target_months(start_year, start_month, month_count):
+    """Calculates a list of (year, month) tuples starting from start_year/start_month."""
+    target_months = []
+    y = start_year
+    m = start_month
+    for _ in range(month_count):
+        target_months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return target_months
+
+def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_name_width, year, start_month, month_count, target_weekday, preview_only=False):
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         pdf_buffer,
@@ -80,12 +110,13 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
     )
 
     story = []
-    start_date = datetime.date(2026, 8, 9)
-    months = [(2026, 8)] if preview_only else [(2026, 8), (2026, 9), (2026, 10), (2026, 11)]
+    
+    # Calculate months sequence
+    months = get_target_months(year, start_month, 1 if preview_only else month_count)
 
     styles = getSampleStyleSheet()
     
-    # Header styles matching the layout design
+    # Header styles
     header_title_style = ParagraphStyle(
         'MainHeader', parent=styles['Heading1'], fontName='Helvetica-Bold',
         fontSize=20, leading=24, textColor=colors.HexColor('#000000'),
@@ -121,7 +152,7 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
     )
 
     printable_width = 538
-    printable_height = 620 # Height allocated for table after headers
+    printable_height = 620
     header_row_height = 25
     student_row_height = (printable_height - (header_row_height * 2)) / max_students_per_page
 
@@ -133,26 +164,28 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
             for i in range(0, len(students), max_students_per_page)
         ]
 
-        for year, month in months:
-            month_name = calendar.month_name[month]
-            sundays = []
-            cal = calendar.monthcalendar(year, month)
+        for y, m in months:
+            month_name = calendar.month_name[m]
+            
+            # Find all dates in month 'm' that match target_weekday
+            matching_dates = []
+            cal = calendar.monthcalendar(y, m)
             for week in cal:
-                day = week[6]
+                day = week[target_weekday]
                 if day != 0:
-                    d = datetime.date(year, month, day)
-                    if d >= start_date:
-                        sundays.append(d)
+                    matching_dates.append(datetime.date(y, m, day))
 
-            num_sundays = len(sundays)
+            num_dates = len(matching_dates)
+            if num_dates == 0:
+                continue
 
             for chunk_idx, chunk in enumerate(student_chunks):
-                # 1. Main Document Title
+                # 1. Main Title
                 story.append(Paragraph(formatted_title, header_title_style))
                 story.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=8, spaceBefore=4))
 
                 # 2. Light Green Month Banner Row
-                month_str = f"{month_name} {year}"
+                month_str = f"{month_name} {y}"
                 banner_table = Table([[Paragraph(month_str, month_banner_style)]], colWidths=[printable_width])
                 banner_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D1E7DD')),
@@ -165,53 +198,47 @@ def generate_pdf(students_by_sheet, title_text, max_students_per_page, student_n
                 story.append(banner_table)
                 story.append(HRFlowable(width="100%", thickness=0, spaceAfter=8))
 
-                # 3. Main Attendance Table Header with Number Column
-                # Col 0: "#" (Row 0-1) | Col 1: "Student Name" (Row 0-1) | Col 2..N: "Attendance + Notes"
+                # 3. Main Table Header with Custom Dates
                 row0 = [
                     Paragraph("<b>#</b>", header_date_style),
                     Paragraph("<b>Student<br/>Name</b>", header_date_style),
                     Paragraph("Attendance + Notes", attendance_banner_style)
-                ] + [""] * (num_sundays - 1)
+                ] + [""] * (num_dates - 1)
                 
-                row1 = ["", ""] + [Paragraph(f"<b>{d.day} {month_name[:3]}</b>", header_date_style) for d in sundays]
+                row1 = ["", ""] + [Paragraph(f"<b>{d.day} {month_name[:3]}</b>", header_date_style) for d in matching_dates]
                 
                 table_data = [row0, row1]
 
-                # Populate Rows with Number, Student Name, and Attendance Boxes
+                # Populate Rows
                 start_student_num = (chunk_idx * max_students_per_page) + 1
                 for idx, student_name in enumerate(chunk):
                     student_num_str = str(start_student_num + idx)
                     table_data.append([
                         Paragraph(student_num_str, num_col_style),
                         Paragraph(student_name, student_style)
-                    ] + [""] * num_sundays)
+                    ] + [""] * num_dates)
 
-                # Pad remaining empty rows if chunk has fewer students than max_students_per_page
+                # Pad remaining empty rows if chunk < max_students_per_page
                 for _ in range(max_students_per_page - len(chunk)):
-                    table_data.append(["", ""] + [""] * num_sundays)
+                    table_data.append(["", ""] + [""] * num_dates)
 
-                # Calculate Column Widths
+                # Column Width Calculations
                 remaining_width = printable_width - NUMBER_COL_WIDTH - student_name_width
-                day_col_width = remaining_width / num_sundays if num_sundays > 0 else remaining_width
-                col_widths = [NUMBER_COL_WIDTH, student_name_width] + [day_col_width] * num_sundays
+                day_col_width = remaining_width / num_dates if num_dates > 0 else remaining_width
+                col_widths = [NUMBER_COL_WIDTH, student_name_width] + [day_col_width] * num_dates
                 
                 row_heights = [header_row_height, header_row_height] + [student_row_height] * max_students_per_page
 
                 t = Table(table_data, colWidths=col_widths, rowHeights=row_heights)
                 t.setStyle(TableStyle([
-                    # Merge "#" across row 0 & 1
                     ('SPAN', (0, 0), (0, 1)),
-                    # Merge "Student Name" across row 0 & 1
                     ('SPAN', (1, 0), (1, 1)),
-                    # Merge "Attendance + Notes" across all Sunday columns on row 0
                     ('SPAN', (2, 0), (-1, 0)),
-                    # Grey background for "Attendance + Notes" banner
                     ('BACKGROUND', (2, 0), (-1, 0), colors.HexColor('#CCCCCC')),
-                    
                     ('GRID', (0, 0), (-1, -1), 1.5, colors.HexColor('#000000')),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    ('ALIGN', (0, 0), (0, -1), 'CENTER'), # Center align student numbers
-                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),   # Left align student names
+                    ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),
                     ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
                     ('TOPPADDING', (0, 0), (-1, -1), 2),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
@@ -265,7 +292,11 @@ if uploaded_file is not None:
                 students_by_sheet, 
                 doc_title, 
                 max_students, 
-                student_col_width, 
+                student_col_width,
+                selected_year,
+                start_month_idx,
+                num_months,
+                selected_day_idx,
                 preview_only=True
             )
             preview_img = render_preview_image(preview_pdf)
@@ -279,6 +310,10 @@ if uploaded_file is not None:
                         doc_title, 
                         max_students, 
                         student_col_width, 
+                        selected_year,
+                        start_month_idx,
+                        num_months,
+                        selected_day_idx,
                         preview_only=False
                     )
                     st.success("PDF generated successfully!")
