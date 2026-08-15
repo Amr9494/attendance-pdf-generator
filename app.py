@@ -25,8 +25,11 @@ MAIN_HEADER_TITLE = "Quran Memorization Sheet"
 NUMBER_COL_WIDTH = 25  # Width of the '#' sequence number column (in points)
 # ==============================================================================
 
-st.set_page_config(page_title="Attendance PDF Generator", layout="centered")
-
+st.set_page_config(
+    page_title="Attendance Sheet Generator",
+    page_icon="📋",
+    layout="centered"
+)
 st.title("📋 Attendance Sheet Generator")
 st.write("Upload your student Excel file, select a sheet, and generate customized PDF attendance sheets.")
 
