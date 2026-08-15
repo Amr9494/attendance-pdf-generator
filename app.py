@@ -21,7 +21,7 @@ except ImportError:
 # ==============================================================================
 # DEFAULT CONFIGURATION
 # ==============================================================================
-MAIN_HEADER_TITLE = "دفتر متابعة حفظ القرآن الكريم"
+MAIN_HEADER_TITLE = "Quran Memorization Sheet"
 NUMBER_COL_WIDTH = 25  # Width of the '#' sequence number column (in points)
 # ==============================================================================
 
